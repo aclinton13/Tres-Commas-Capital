@@ -1,4 +1,3 @@
-# Your Project Name
 # Tres Commas Capital
 ## Setup
 
