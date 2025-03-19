@@ -1,0 +1,167 @@
+# Azure Pipeline Architecture Documentation
+
+## Overview
+
+This document outlines the Azure DevOps pipeline architecture for our ML-driven recommendation system. The system consists of four main pipelines that work together to collect data, perform analysis, generate recommendations, and deploy the application.
+
+## Pipeline Components
+
+### 1. Main CI/CD Pipeline (`azure-pipelines.yml`)
+
+**Purpose**: Handle continuous integration and deployment of the application code.
+
+**Triggers**:
+- Code pushes to the `main` branch
+
+**Key Stages**:
+- **Build Stage**: Builds and tests the application code
+  - Python dependency installation
+  - Running unit tests
+  - Building React frontend
+  - Creating deployment artifacts
+- **Deploy Stage**: Deploys the application to Azure
+  - Deploying to Azure Functions
+  - Deploying to Azure Web App
+
+**Security**:
+- Uses service connections with limited permissions
+- Secrets managed through Azure KeyVault
+
+### 2. Data Collection Pipeline (`data-collection-pipeline.yml`)
+
+**Purpose**: Collect and process data from various sources on a regular schedule.
+
+**Triggers**:
+- Scheduled (every 4 hours)
+
+**Key Steps**:
+- Start Azure Data Factory pipeline for data collection
+- Process collected data
+- Validate data quality
+- Store processed data in Azure Blob Storage
+- Send notifications on completion
+
+**Security**:
+- Managed identities for Azure resources
+- Access control at storage account level
+- Data validation to prevent corrupted data
+
+### 3. Analysis Pipeline (`analysis-pipeline.yml`)
+
+**Purpose**: Analyze the collected data using ML models and Azure OpenAI.
+
+**Triggers**:
+- Code changes to analysis or model components
+- Can be manually triggered
+
+**Key Steps**:
+- Download processed data
+- Run initial data analysis
+- Perform Azure OpenAI enhanced analysis
+- Generate insights and visualizations
+- Store results in Cosmos DB
+
+**Security**:
+- OpenAI API keys stored in KeyVault
+- Data access through managed identities
+- Input validation to prevent injection attacks
+
+### 4. Recommendation Pipeline (`recommendation-pipeline.yml`)
+
+**Purpose**: Generate user recommendations based on analyzed data.
+
+**Triggers**:
+- Completion of the Analysis Pipeline
+
+**Key Steps**:
+- Retrieve analysis results from Cosmos DB
+- Generate recommendations using the configured engine
+- Validate recommendation quality
+- Store recommendations in database
+- Update application recommendation status
+- Send notification of recommendation update
+
+**Security**:
+- Database access keys stored in KeyVault
+- Input validation for recommendation generation
+- Quality validation before storage
+
+## Authentication and Security
+
+### Service Authentication
+- Azure DevOps uses service principals with limited permissions
+- Managed identities are used for service-to-service authentication
+- Key rotation policies are in place for service principals
+
+### Secret Management
+- All secrets (API keys, connection strings) stored in Azure KeyVault
+- No secrets stored in pipeline variables or code
+- Access to KeyVault restricted by RBAC
+
+### Access Control
+- Pipeline variables are secured where appropriate
+- Storage account access controlled by SAS tokens with expiration
+- Network security groups restrict traffic between services
+
+## Monitoring and Alerts
+
+- Pipeline completion status sent via email/Teams
+- Failed runs trigger alerts to the development team
+- Data quality issues create warning notifications
+- Recommendation quality below threshold generates alerts
+
+## Error Handling
+
+- Each pipeline includes error handling and logging
+- Failed steps are reported with detailed error messages
+- Retry logic implemented for transient failures
+- Circuit breaker pattern for external service calls
+
+## Pipeline Diagram
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌────────────────────┐
+│                 │     │                 │     │                    │
+│  Data Collection│────▶│    Analysis     │────▶│   Recommendation   │
+│    Pipeline     │     │    Pipeline     │     │     Pipeline       │
+│                 │     │                 │     │                    │
+└─────────────────┘     └─────────────────┘     └────────────────────┘
+        │                                                 │
+        │                                                 │
+        │                                                 │
+        ▼                                                 ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                                                                     │
+│                        Main CI/CD Pipeline                          │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+        │                                                 │
+        │                                                 │
+        ▼                                                 ▼
+┌─────────────────┐                             ┌────────────────────┐
+│                 │                             │                    │
+│ Azure Functions │                             │    Web Frontend    │
+│                 │                             │                    │
+└─────────────────┘                             └────────────────────┘
+```
+
+## Schedules and Dependencies
+
+- **Data Collection**: Runs every 4 hours
+- **Analysis**: Triggered by code changes or manually when needed
+- **Recommendation**: Triggered by completion of Analysis Pipeline
+- **CI/CD**: Triggered by code changes to the main branch
+
+## Customization and Configuration
+
+The pipelines are configured through variables that can be adjusted per environment:
+- `recommendationEngine`: Algorithm used for recommendations (collaborative, content-based, hybrid)
+- `confidenceThreshold`: Minimum confidence level for recommendations
+- `batchSize`: Processing batch size for analysis and recommendations
+
+## Environment-Specific Configuration
+
+The pipelines support different environments (dev, test, prod) through:
+- Environment-specific variable groups
+- Environment-specific service connections
+- Conditional deployment steps based on target environment

@@ -1,0 +1,104 @@
+# Azure DevOps Pipeline for ML Project
+# This pipeline handles CI/CD for the entire application
+
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  python.version: '3.9'
+  azureSubscription: 'YourAzureServiceConnection'
+  resourceGroup: 'YourResourceGroup'
+  functionAppName: 'YourFunctionAppName'
+  webAppName: 'YourWebAppName'
+  cosmosDBAccount: 'YourCosmosDBAccount'
+  openAIResourceName: 'YourOpenAIResourceName'
+
+stages:
+- stage: Build
+  displayName: 'Build Stage'
+  jobs:
+  - job: BuildJob
+    steps:
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '$(python.version)'
+      displayName: 'Use Python $(python.version)'
+
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+      displayName: 'Install dependencies'
+
+    - script: |
+        pip install pytest pytest-cov
+        pytest tests --doctest-modules --junitxml=junit/test-results.xml --cov=. --cov-report=xml
+      displayName: 'Run tests'
+
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/test-results.xml'
+      displayName: 'Publish test results'
+
+    - task: NodeTool@0
+      inputs:
+        versionSpec: '16.x'
+      displayName: 'Install Node.js'
+
+    - script: |
+        cd frontend
+        npm install
+        npm run build
+      displayName: 'Build React app'
+
+    - task: ArchiveFiles@2
+      inputs:
+        rootFolderOrFile: '$(System.DefaultWorkingDirectory)'
+        includeRootFolder: false
+        archiveType: 'zip'
+        archiveFile: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip'
+        replaceExistingArchive: true
+      displayName: 'Archive project files'
+
+    - task: PublishBuildArtifacts@1
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: 'drop'
+        publishLocation: 'Container'
+      displayName: 'Publish artifacts'
+
+- stage: Deploy
+  displayName: 'Deploy Stage'
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - job: DeployJob
+    steps:
+    - task: DownloadBuildArtifacts@1
+      inputs:
+        buildType: 'current'
+        downloadType: 'single'
+        artifactName: 'drop'
+        downloadPath: '$(System.ArtifactsDirectory)'
+      displayName: 'Download artifacts'
+
+    - task: AzureFunctionApp@1
+      inputs:
+        azureSubscription: '$(azureSubscription)'
+        appType: 'functionApp'
+        appName: '$(functionAppName)'
+        package: '$(System.ArtifactsDirectory)/drop/$(Build.BuildId).zip'
+        deploymentMethod: 'auto'
+      displayName: 'Deploy Azure Function App'
+
+    - task: AzureWebApp@1
+      inputs:
+        azureSubscription: '$(azureSubscription)'
+        appType: 'webApp'
+        appName: '$(webAppName)'
+        package: '$(System.ArtifactsDirectory)/drop/$(Build.BuildId).zip'
+        deploymentMethod: 'auto'
+      displayName: 'Deploy Web App'

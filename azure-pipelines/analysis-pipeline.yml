@@ -1,0 +1,124 @@
+# Azure DevOps Pipeline for Data Analysis with Azure OpenAI
+# This pipeline runs data analysis including ML models and OpenAI processing
+
+trigger:
+  branches:
+    include:
+    - main
+  paths:
+    include:
+    - src/analysis/*
+    - src/models/*
+
+pr: none
+
+variables:
+  azureSubscription: 'YourAzureServiceConnection'
+  resourceGroup: 'YourResourceGroup'
+  openAIResourceName: 'YourOpenAIResourceName'
+  openAIDeploymentName: 'YourOpenAIDeploymentName'
+  batchSize: 32
+  cosmosDBAccount: 'YourCosmosDBAccount'
+  pymtParams: '--no-cache-dir --upgrade'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+- stage: Analysis
+  displayName: 'Data Analysis Stage'
+  jobs:
+  - job: PrepareEnvironment
+    displayName: 'Prepare Analysis Environment'
+    steps:
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '3.9'
+      displayName: 'Use Python 3.9'
+
+    - script: |
+        python -m pip install $(pymtParams) -r src/analysis/requirements.txt
+      displayName: 'Install analysis dependencies'
+
+    - task: AzureKeyVault@2
+      inputs:
+        azureSubscription: '$(azureSubscription)'
+        KeyVaultName: 'YourKeyVaultName'
+        SecretsFilter: 'OPENAI-API-KEY'
+      displayName: 'Get OpenAI API Key from KeyVault'
+
+  - job: RunAnalysis
+    displayName: 'Run Data Analysis'
+    dependsOn: PrepareEnvironment
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Download processed data'
+      inputs:
+        azureSubscription: $(azureSubscription)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Downloading processed data for analysis..."
+          az storage blob download-batch \
+            --source processed-data \
+            --destination ./data \
+            --account-name $(storageAccountName)
+
+    - script: |
+        echo "Running initial data analysis..."
+        python src/analysis/run_analysis.py \
+          --data-path ./data \
+          --output-path ./analysis_results \
+          --batch-size $(batchSize)
+      displayName: 'Run initial data analysis'
+
+    - task: AzureCLI@2
+      displayName: 'Invoke Azure OpenAI for advanced analysis'
+      inputs:
+        azureSubscription: $(azureSubscription)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Running OpenAI-enhanced analysis..."
+          # Set OpenAI environment variables
+          export OPENAI_API_KEY=$(OPENAI-API-KEY)
+          export OPENAI_API_BASE="https://$(openAIResourceName).openai.azure.com/"
+          export OPENAI_API_VERSION="2023-05-15"
+          export OPENAI_DEPLOYMENT_NAME=$(openAIDeploymentName)
+
+          # Run the OpenAI analysis
+          python src/analysis/openai_analysis.py \
+            --input-path ./analysis_results \
+            --output-path ./enhanced_results
+
+    - script: |
+        echo "Generating final insights and visualizations..."
+        python src/analysis/generate_insights.py \
+            --input-path ./enhanced_results \
+            --output-path ./final_insights
+      displayName: 'Generate final insights'
+
+    - task: AzureCLI@2
+      displayName: 'Store analysis results in Cosmos DB'
+      inputs:
+        azureSubscription: $(azureSubscription)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Storing analysis results in Cosmos DB..."
+          python src/storage/store_results.py \
+            --data-path ./final_insights \
+            --cosmos-db-account $(cosmosDBAccount) \
+            --cosmos-db-database analysis \
+            --cosmos-db-container results
+
+          # Generate a report of the analysis
+          python src/reporting/generate_report.py \
+            --data-path ./final_insights \
+            --report-path ./analysis_report
+
+          # Store report in blob storage
+          az storage blob upload-batch \
+            --destination analysis-reports \
+            --source ./analysis_report \
+            --account-name $(storageAccountName)

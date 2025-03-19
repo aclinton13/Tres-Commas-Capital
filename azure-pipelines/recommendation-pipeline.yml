@@ -1,0 +1,120 @@
+# Azure DevOps Pipeline for Recommendation Generation
+# This pipeline generates recommendations based on analyzed data
+
+trigger: none
+
+# This pipeline is triggered when the analysis pipeline completes
+resources:
+  pipelines:
+  - pipeline: analysisResults
+    source: AnalysisPipeline
+    trigger:
+      branches:
+        include:
+        - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  azureSubscription: 'YourAzureServiceConnection'
+  resourceGroup: 'YourResourceGroup'
+  cosmosDBAccount: 'YourCosmosDBAccount'
+  recommendationEngine: 'hybrid'  # Options: collaborative, content-based, hybrid
+  confidenceThreshold: 0.75
+
+steps:
+- task: UsePythonVersion@0
+  inputs:
+    versionSpec: '3.9'
+  displayName: 'Use Python 3.9'
+
+- script: |
+    python -m pip install --upgrade pip
+    pip install -r src/recommendations/requirements.txt
+  displayName: 'Install dependencies'
+
+- task: AzureKeyVault@2
+  inputs:
+    azureSubscription: '$(azureSubscription)'
+    KeyVaultName: 'YourKeyVaultName'
+    SecretsFilter: 'COSMOS-DB-KEY,STORAGE-ACCOUNT-KEY'
+  displayName: 'Get secrets from KeyVault'
+
+- task: AzureCLI@2
+  displayName: 'Retrieve Analysis Results'
+  inputs:
+    azureSubscription: $(azureSubscription)
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      echo "Retrieving analysis results from Cosmos DB..."
+      python src/data/retrieve_analysis.py \
+        --cosmos-db-account $(cosmosDBAccount) \
+        --cosmos-db-key $(COSMOS-DB-KEY) \
+        --cosmos-db-database analysis \
+        --cosmos-db-container results \
+        --output-path ./analysis_data
+
+- script: |
+    echo "Generating user recommendations..."
+    python src/recommendations/generate_recommendations.py \
+      --input-path ./analysis_data \
+      --output-path ./recommendations \
+      --engine $(recommendationEngine) \
+      --confidence-threshold $(confidenceThreshold) \
+      --batch-size 1000
+  displayName: 'Generate Recommendations'
+
+- task: AzureCLI@2
+  displayName: 'Validate Recommendations'
+  inputs:
+    azureSubscription: $(azureSubscription)
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      echo "Validating recommendation quality..."
+      python src/validation/validate_recommendations.py \
+        --recommendations-path ./recommendations \
+        --historical-data-path ./analysis_data/historical \
+        --output-path ./validation_results
+
+      # Check validation results
+      VALIDATION_SCORE=$(cat ./validation_results/summary.json | jq -r '.overall_score')
+      echo "Validation Score: $VALIDATION_SCORE"
+
+      if (( $(echo "$VALIDATION_SCORE < 0.7" | bc -l) )); then
+        echo "##vso[task.logissue type=warning]Recommendation quality below threshold: $VALIDATION_SCORE"
+      fi
+
+- task: AzureCLI@2
+  displayName: 'Store Recommendations in Database'
+  inputs:
+    azureSubscription: $(azureSubscription)
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      echo "Storing recommendations in Cosmos DB..."
+      python src/storage/store_recommendations.py \
+        --recommendations-path ./recommendations \
+        --cosmos-db-account $(cosmosDBAccount) \
+        --cosmos-db-key $(COSMOS-DB-KEY) \
+        --cosmos-db-database recommendations \
+        --cosmos-db-container active
+
+      # Update recommendation status in application database
+      python src/app/update_recommendation_status.py \
+        --status "updated" \
+        --timestamp "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+- task: AzureCLI@2
+  displayName: 'Notify Recommendation Update'
+  inputs:
+    azureSubscription: $(azureSubscription)
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      echo "Sending notification about recommendation update..."
+      python src/notifications/send_notification.py \
+        --event "recommendations_updated" \
+        --details "New recommendations generated at $(date)"

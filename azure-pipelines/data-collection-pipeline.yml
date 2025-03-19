@@ -1,0 +1,88 @@
+# Azure DevOps Pipeline for Data Collection
+# This pipeline collects data from various sources on a schedule
+
+trigger: none # No CI trigger
+
+schedules:
+- cron: "0 */4 * * *" # Run every 4 hours
+  displayName: Regular data collection
+  branches:
+    include:
+    - main
+  always: true
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  azureSubscription: 'YourAzureServiceConnection'
+  dataFactoryName: 'YourDataFactoryName'
+  resourceGroup: 'YourResourceGroup'
+
+steps:
+- task: AzureCLI@2
+  displayName: 'Authenticate to Azure'
+  inputs:
+    azureSubscription: $(azureSubscription)
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      echo "Authenticating to Azure..."
+      az account show
+
+- task: PowerShell@2
+  displayName: 'Start Data Factory Pipeline'
+  inputs:
+    targetType: 'inline'
+    script: |
+      # Parameters for the pipeline
+      $resourceGroupName = "$(resourceGroup)"
+      $dataFactoryName = "$(dataFactoryName)"
+      $pipelineName = "DataCollectionPipeline"
+
+      # Trigger pipeline run
+      $runId = az datafactory pipeline create-run --resource-group $resourceGroupName --factory-name $dataFactoryName --pipeline-name $pipelineName --query runId -o tsv
+      Write-Host "Pipeline run ID: $runId"
+
+      # Wait for the pipeline to complete
+      $status = "InProgress"
+      while ($status -eq "InProgress") {
+        Start-Sleep -Seconds 30
+        $status = az datafactory pipeline-run show --resource-group $resourceGroupName --factory-name $dataFactoryName --run-id $runId --query status -o tsv
+        Write-Host "Pipeline status: $status"
+      }
+
+      if ($status -ne "Succeeded") {
+        Write-Host "##vso[task.logissue type=error]Pipeline run failed with status: $status"
+        exit 1
+      }
+
+- task: AzureCLI@2
+  displayName: 'Process Collected Data'
+  inputs:
+    azureSubscription: $(azureSubscription)
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      echo "Running post-processing on collected data..."
+      python scripts/data_processing.py \
+        --source-container source-data \
+        --processed-container processed-data \
+        --storage-account $(storageAccountName)
+
+- task: AzureCLI@2
+  displayName: 'Validate Data Quality'
+  inputs:
+    azureSubscription: $(azureSubscription)
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      echo "Validating data quality..."
+      python scripts/validate_data.py \
+        --container processed-data \
+        --storage-account $(storageAccountName)
+
+      # Send notification on completion
+      python scripts/notify_completion.py \
+        --status "Data collection completed" \
+        --notify-email "team@example.com"
