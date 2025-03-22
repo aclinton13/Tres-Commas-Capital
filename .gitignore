@@ -172,3 +172,10 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Cache files
+cache_data/
+*.db
+*.db-shm
+*.db-wal
+financial_data_api/cache_data/
